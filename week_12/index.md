@@ -220,10 +220,65 @@ while (true) {
 <p align="center">
   <img src="tcp_rpc_client_1.png" width="80%" alt="TCP Client Output">
   <br>
-  <em>Figure 3: Bulk Transfer of 1 GB Data Using TCP</em>
+  <em>Figure 4: 100K RPC Workload Using TCP</em>
 </p>
 
 The benchmark executed 100,000 transactions in 17.2006 seconds. The system achieved a throughput of 5813.75 Transactions Per Second (TPS) with an average latency of 0.172006 ms per round-trip. Because each transaction requires a full round-trip across the network before the next can begin, this workload is heavily bottlenecked by the inherent latency of the TCP protocol and OS kernel processing, rather than raw bandwidth.
+
+## TCP Optimizations
+While TCP provides reliable delivery, its default configuration is tuned for general-purpose internet traffic, prioritizing bandwidth conservation and fairness over extreme low latency or maximum throughput. By adjusting specific socket options and application-level behaviors, we can optimize TCP for high-performance network applications.
+
+### Socket Options for Low Latency
+* **`TCP_NODELAY` (Disabling Nagle's Algorithm):** Nagle's algorithm is a congestion control mechanism which bundles multiple small, outgoing data packets into a single, larger packet before sending. While efficient for bandwidth, it introduces latency by delaying transmission  until a full packet is formed or an acknowledgment is received. For real-world applications requiring immediate data dispatch this delay is counterproductive. We can disable Nagle's algorithm for the client using the TCP_NODELAY socket option to ensure packets are transmitted immediately.
+
+```cpp
+// Optimization: Disable Nagle's algorithm on the sending socket
+int opt_nodelay = 1;
+if (setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &opt_nodelay, sizeof(opt_nodelay)) < 0) {
+  log_error("setsockopt(TCP_NODELAY) failed:", errno);
+}
+```
+
+* **`TCP_QUICKACK` (Disabling Delayed Acknowledgments):** By default, TCP delays sending an acknowledgment (ACK) for up to 40-500 milliseconds, attempting to piggyback the ACK onto an outgoing data packet. To combat this, we disable delayed acknowledgment for the server, ensuring ACKs are sent immediately. This directly reduces response time  in request-response loops. Note that on Linux systems, `TCP_QUICKACK` is not permanent and must be re-applied to the socket after subsequent read operations.
+
+```cpp
+// Optimization: Disable delayed ACKs for the incoming packet
+// This must be set on the active client_socket, and reused after every read
+int quickack = 1;
+setsockopt(client_socket, IPPROTO_TCP, TCP_QUICKACK, &quickack, sizeof(quickack));
+```
+
+* **Buffer Sizes (`SO_RCVBUF` / `SO_SNDBUF`):** The operating system maintains memory buffers for unacknowledged outgoing data and unprocessed incoming data. Modifying these properties configures socket buffer sizes to optimize for specific network conditions and workload patterns. For bulk data transfers over high-speed links, default OS buffers are often too small, which prevents TCP from effectively scaling its window size.
+
+```cpp
+// Optimization: Increase Receive Buffer Size (4 MB)
+// Must be done before listen() so Window Scaling is negotiated correctly
+int rcvbuf = 4 * 1024 * 1024; 
+if (setsockopt(server_fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf)) < 0) {
+  log_error("setsockopt(SO_RCVBUF) failed:", errno);
+}
+```
+
+We applied this optimizations to our TCP bulk transfer and RPC benchmarks.
+
+<a id="bulk_transfer_2"></a>
+<p align="center">
+  <img src="tcp_bulk_transfer_server_2.png" width="48%" alt="TCP Server Output">
+  <img src="tcp_bulk_transfer_client_2.png" width="48%" alt="TCP Client Output">
+  <br>
+  <em>Figure 5: Bulk Transfer of 1 GB Data Using TCP with Socket Optmizations</em>
+</p>
+
+<a id="rpc_2"></a>
+<p align="center">
+  <img src="tcp_rpc_client_2.png" width="80%" alt="TCP Client Output">
+  <br>
+  <em>Figure 6: 100K RPC Workload Using TCP with Socket Optmizations</em>
+</p>
+
+The unoptimized bulk transfer successfully saturated the network at ~934 Mbps. After applying the buffer size optimizations (`SO_RCVBUF` and `SO_SNDBUF` set to 4 MB), the transfer completed in 9.20524 seconds with a throughput of 933.157 Mbps. The lack of performance improvement indicates we already satuarted the network with the default buffer sizes. The Sunlab cluster is very fast so the impact of any system level optmizations will be very minimal. Also Linux TCP optmization already employs smart algorithms to automatically configure the buffer sizes to fit the workload.
+
+The optimized RPC workload processed 100,000 transactions in 17.1002 seconds, yielding 5847.89 Transactions Per Second (TPS) with an average latency of 0.171002 ms per round-trip. This is only a marginal improvement over the unoptimized baseline of ~5813 TPS. While applying `TCP_NODELAY` and `TCP_QUICKACK` successfully removes delays by forcing immediate packet dispatch and acknowledgment, the performance remained flat. In a fast network with low latency, the delays introduced by Nagle's algorithm and delayed ACKs are not the primary bottleneck. Instead, the performance is bottlenecked by system calls at the application level.
 
 ## Background and Motivation
 
