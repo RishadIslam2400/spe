@@ -1,6 +1,6 @@
 # Network Systems Optimizations 
 
-## Lecture 1: Traditional Networking Optimizations
+# Lecture 1: Traditional Networking Optimizations
 *CSE 498 — Alex Clevenger, Rishad Islam, Reilly Yankovich*
 
 ## Definition: Network protocols
@@ -535,11 +535,134 @@ For the bulk transfer, the client was configured to send 1024 MB of target data 
 
 In stark contrast to the bulk transfer, the RPC workload experienced significant performance improvements. The optimized application processed 100,000 transactions using a batch size of 32. The entire workload completed in just 0.654375 seconds, improving the throughput to 152,818 Transactions Per Second (TPS). The average round-trip latency decreased to 0.00654375 ms. This shows a huge jump from the previous socket-optimized benchmark of ~5847 TPS. The primary reason of this improvement is message batching utilized over a persistent connection. By aggregating 32 smaller messages into a single system call, the application bypassed the overhead associated with continuous context switching between user space and the OS kernel space. Furthermore, enforcing memory alignment on the data structures ensured that the CPU could fetch and process the grouped data efficiently without unnecessary cache line reads. Because RPC workloads are traditionally bound by CPU processing and system call overhead rather than raw network bandwidth, structuring the application architecture to balance latency and throughput directly alleviates these bottlenecks.
 
-## Background and Motivation for RDMA
+## A Distributed System Example
+To demonstrate the effects of these network optimizations in a realistic scenario, we deployed a distributed workload across a cluster of four Sunlab machines. In this topology, each node acts as both a client and a server. Every node spawns 6 client threads, and across these threads, each node attempts to send a total of 120,000 request messages to the other nodes in the cluster, waiting for an ACK for each. A distributed barrier coordinates the start and end times to ensure accurate benchmarking.
 
-TODO
+### Naive Implementation
+The baseline implementation relies on standard, unoptimized POSIX socket calls and treats every single message as an isolated transaction. The client thread initiates a completely new TCP connection for every individual request. It establishes the 3-way handshake, sends the 1032-byte message using a standard `write()` system call, waits to `read()` the response, and then immediately tears down the connection using `close()`.
 
-## Lecture 2: Remote Direct Memory Access (RDMA)
+```cpp
+// Naive Client Thread Baseline
+for (int i = 0; i < MESSAGES_PER_THREAD; ++i) {
+  // Open a new TCP connection for every message
+  int sock = socket(AF_INET, SOCK_STREAM, 0);
+  connect(sock, (struct sockaddr*)&serv_addr, sizeof(serv_addr));
+
+  Message msg;
+  msg.sender_id = my_node_id;
+  msg.message_id = i;
+  memset(msg.payload, 'A', sizeof(msg.payload));
+
+  // Unoptimized delivery: 1 write per syscall
+  write_exact(sock, &msg, sizeof(Message));
+    
+  Message response;
+  read_exact(sock, &response, sizeof(Message));
+
+  // Close connection immediately
+  close(sock);
+}
+```
+
+### Optimized Implementation
+The optimized implementation overhauls the design by integrating memory alignment, socket-level tuning, persistent connections, and scatter/gather I/O.
+
+* **Cache Line Alignment:** The `Message` struct is padded to exactly align with standard 64-byte CPU cache lines, preventing inefficient memory fetches.
+
+```cpp
+// Optimization 1: Memory Alignment
+struct alignas(64) Message {
+  int sender_id;
+  int message_id;
+  char payload[1024];
+};
+```
+
+* **Persistent Connection Pool & Socket Tuning:** Instead of thrashing the network stack with thousands of handshakes, each client thread opens a single socket, connects once, and keeps it open. We tune this socket by disabling Nagle's algorithm and Delayed ACKs.
+
+```cpp
+// Optimization 2 & 4: Persistent Socket and Tuning
+int sock = socket(AF_INET, SOCK_STREAM, 0);
+connect(sock, (struct sockaddr*)&serv_addr, sizeof(serv_addr));
+
+// Disable Nagle's Algorithm and Delayed ACKs
+int opt = 1;
+setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
+setsockopt(sock, IPPROTO_TCP, TCP_QUICKACK, &opt, sizeof(opt));
+```
+
+* **Batching and Scatter/Gather I/O:** Rather than sending messages one by one, the application groups 100 messages together. Instead of copying these 100 structs into one massive intermediate application buffer, it uses the `writev` (gather) and `readv` (scatter) system calls. This allows the OS kernel to pull directly from the array of structs and push them to the network card in a single system call, bypassing user-space copies.
+
+```cpp
+// Optimization 3: Batching with Zero-Copy/Scatter-Gather I/O
+Message msgs[BATCH_SIZE];
+struct iovec iov[BATCH_SIZE];
+size_t batch_bytes = sizeof(Message) * BATCH_SIZE;
+
+for (int b = 0; b < num_batches; ++b) {
+  // ... populate msgs array ...
+  
+  // Gather Write: Send 100 messages in one syscall
+  reset_iovec(iov, msgs, BATCH_SIZE);
+  writev_exact(sock, iov, BATCH_SIZE, batch_bytes);
+
+  // Scatter Read: Receive 100 responses in one syscall
+  reset_iovec(iov, msgs, BATCH_SIZE);
+  readv_exact(sock, iov, BATCH_SIZE, batch_bytes);
+}
+```
+
+### Benchmark Results
+
+<a id="naive_dist_system"></a>
+<p align="center">
+  <img src="img/dist_system_naive_node0.png" width="48%" alt="Top Left">
+  <img src="img/dist_system_naive_node1.png" width="48%" alt="Top Right">
+  <br>
+  <img src="img/dist_system_naive_node2.png" width="48%" alt="Bottom Left">
+  <img src="img/dist_system_naive_node3.png" width="48%" alt="Bottom Right">
+  <br>
+  <em>Figure 10: Naive implementation performance across four nodes in a distributed system</em>
+</p>
+
+The naive system took approximately 34.3 seconds to complete its execution phase. The server logs indicate that each node only successfully processed between 84,689 and 84,690 messages—meaning roughly 30% of the network traffic was completely lost. Because the application rapidly opened and closed sockets for every single message, it quickly exhausted the operating system's ephemeral port range and overwhelmed the `TIME-WAIT` and `SYN backlog` queues. The kernel simply could not tear down the sockets fast enough, leading to dropped connections and failed message deliveries. This is an example of TCP connection thrashing.
+
+<a id="optimized_dist_system"></a>
+<p align="center">
+  <img src="img/dist_system_opt_node0.png" width="48%" alt="Top Left">
+  <img src="img/dist_system_opt_node1.png" width="48%" alt="Top Right">
+  <br>
+  <img src="img/dist_system_opt_node2.png" width="48%" alt="Bottom Left">
+  <img src="img/dist_system_opt_node3.png" width="48%" alt="Bottom Right">
+  <br>
+  <em>Figure 11: Optimized implementation performance across four nodes in a distributed system</em>
+</p>
+
+The optimized system completed the exact same workload in roughly 2.63 seconds. Furthermore, every single node processed exactly 120,000 messages. By utilizing persistent connections, we eliminated the connection overhead and backlog exhaustion. Application batching combined with `writev`/`readv` drastically reduced the total number of system calls and context switches, while `TCP_NODELAY` and `TCP_QUICKACK` ensured the payloads were not stalled in the kernel's queue. The combination of these strategies resulted in a system that is roughly 13 times faster and strictly reliable.
+
+
+## Motivation for RDMA
+From our discussion so far, traditional network protocols force a trade-off between reliability and performance. UDP provides minimal overhead and fast execution but lacks the flow control, congestion control, and guaranteed delivery required by stateful distributed applications. Conversely, TCP ensures strict, in-order packet delivery but introduces latency and throughput bottlenecks due to its heavy reliance on the operating system's kernel. The performance limitations of TCP arise from three main sources:
+
+* **Context Switching Overhead:** Every standard `send()` and `recv()` operation in TCP requires a system call, forcing the processor to switch back and forth between user space and kernel space. In high-throughput RPC workloads, this continuous state switching consumes thousands of CPU cycles per transaction, increasing latency.
+
+* **Redundant Memory Copies:** Standard TCP requires data to be copied multiple times before it ever leaves the machine. For a basic send operation, data is copied from the application's user-space memory buffer into the kernel's socket buffer, and finally transferred to the NIC.
+
+* **CPU Interrupt Processing:** When a standard TCP packet arrives, the NIC generates a hardware interrupt. This forces the CPU to halt active processing, handle the packet, traverse the complex TCP state machine, compute checksums, and generate an acknowledgment. Under heavy network loads, the CPU spends more time processing the network stack than executing the actual application logic.
+
+While our previous application-level optimizations (such as batching and scatter/gather I/O) mitigate these issues by reducing the frequency of system calls, they do not eliminate the kernel from the data path. The performance ceiling is still dictated by the OS.
+
+RDMA completely rearchitects how data is transmitted by shifting the transport layer logic from the software kernel directly onto specialized networking hardware, known as an RNIC (RDMA-enabled NIC). This solves the limitations of both TCP and UDP through three core mechanisms:
+
+* **Kernel Bypass:** After the initial connection is established, the application data path entirely bypasses the operating system. The application posts read and write work requests directly to hardware queues managed by the RNIC. No system calls are made during data transmission.
+
+* **True Zero-Copy Networking:** The RNIC utilizes direct memory access to read data directly from the sender's registered user-space memory and write it directly into the receiver's user-space memory over the network. Intermediate kernel buffers are eliminated.
+
+* **Asynchronous CPU Offload:** Because the hardware handles all packet segmentation, reassembly, congestion control, and reliability guarantees (when operating in Reliable Connection mode), the host CPU is entirely freed from network processing tasks.
+
+By delivering the strict reliability guarantees of TCP via a hardware-accelerated, kernel-bypassing architecture, RDMA achieves sub-microsecond latencies. This hardware offloading makes it the standard for data-intensive applications.
+
+# Lecture 2: Remote Direct Memory Access (RDMA)
 
 *CSE 498 — Alex Clevenger, Rishad Islam, Reilly Yankovich*
 
