@@ -288,6 +288,56 @@ The unoptimized bulk transfer successfully saturated the network at ~934 Mbps. A
 
 The optimized RPC workload processed 100,000 transactions in 17.1002 seconds, yielding 5847.89 Transactions Per Second (TPS) with an average latency of 0.171002 ms per round-trip. This is only a marginal improvement over the unoptimized baseline of ~5813 TPS. While applying `TCP_NODELAY` and `TCP_QUICKACK` successfully removes delays by forcing immediate packet dispatch and acknowledgment, the performance remained flat. In a fast network with low latency, the delays introduced by Nagle's algorithm and delayed ACKs are not the primary bottleneck. Instead, the performance is bottlenecked by system calls at the application level.
 
+Beyond these common socket options, the OS TCP stack provides advanced socket options to further minimize latency and control traffic flow. However, we did not apply these in our example as the effect would negligible. The descriptions of these optmizations and ways to apply them are as follows:
+
+* **`SO_PRIORITY`:** When multiple applications are actively transmitting data on the same machine, network packets can experience queuing delays before they even reach the physical network card. We can mitigate this by explicitly setting the priority of a socket's traffic. This instructs the Linux kernel's network scheduler to process these packets ahead of lower-priority traffic.Priority values typically range from 0 to 6, where a value of 6 designates high priority, which is ideal for latency-sensitive, interactive traffic.
+
+```cpp
+// Optimization: Assign high priority to the socket for QoS
+int priority = 6; 
+int result = setsockopt(sockfd, SOL_SOCKET, SO_PRIORITY, &priority, sizeof(priority));
+if (result < 0) {
+  std::cerr << "Failed to set SO_PRIORITY: " << strerror(errno) << std::endl;
+}
+```
+
+* **`TCP_CONGESTION`:** By default, most Linux distributions utilize *CUBIC*, a loss-based congestion control algorithm. Loss-based algorithms assume the network is uncongested until a packet is dropped, which can cause them to overfill intermediate router buffers and increase latency. We can select a different congestion control algorithm on a per-socket basis. A powerful modern alternative is *BBR (Bottleneck Bandwidth and Round-trip propagation time)*. Instead of waiting for packet loss, *BBR* continuously measures the maximum bottleneck bandwidth and the minimum RTT of the connection to proactively control network traffic. Switching to BBR or other algorithms can improve performance, especially on high-speed networks.  Before applying this in code, we can verify which algorithms our operating system currently supports via the command line:
+
+```bash
+# Check system default:
+cat /proc/sys/net/ipv4/tcp_congestion_control
+# List available algorithms:
+cat /proc/sys/net/ipv4/tcp_available_congestion_control
+```
+
+Once verified, we can apply it directly to the socket:
+```cpp
+#ifdef __linux__
+// Optimization: Switch congestion control to BBR
+char algo[16] = "bbr";
+int result = setsockopt(sockfd, IPPROTO_TCP, TCP_CONGESTION, algo, strlen(algo));
+if (result < 0) {
+  std::cerr << "Failed to set TCP_CONGESTION: " << strerror(errno) << std::endl;
+}
+
+// Optional: Verify the algorithm was successfully applied
+char current_algo[16];
+socklen_t optlen = sizeof(current_algo);
+getsockopt(sockfd, IPPROTO_TCP, TCP_CONGESTION, current_algo, &optlen);
+std::cout << "Current congestion algorithm: " << current_algo << std::endl;
+#endif
+```
+
+* **`TCP_FASTOPEN`:** Standard TCP connections require a three-way handshake before any application data can be transmitted. This introduces a mandatory 1-RTT delay just to open the connection. TCP Fast Open (TFO) reduces connection setup latency by allowing data transfer during the initial handshake. When enabled, the client receives a cryptographic cookie during its first connection to a server. On subsequent connections, the client can place its initial data directly inside the SYN packet alongside the cookie. This provides a zero-RTT connection setup, which is highly suitable for applications that rely on short-lived connections. To use this, the server must enable the `TCP_FASTOPEN` socket option to define the length of the queue for pending Fast Open requests:
+```cpp
+// Server-side Optimization: Enable TCP Fast Open 
+// The value '5' dictates the queue size for TFO requests
+int qlen = 5;
+setsockopt(server_fd, SOL_TCP, TCP_FASTOPEN, &qlen, sizeof(qlen));
+```
+
+### Network Interface Configuration
+
 ## Background and Motivation
 
 TODO
