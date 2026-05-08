@@ -41,15 +41,19 @@ If using two separate systems, then you will need to know the IP of at least one
 </p
 * **Step 3:** open a second terminal. If using 2 separate systems, you will want a terminal on each; if using loopback, then 2 terminals on the same machine will work.
 * **Step 4:** pick one of the terminals to be the server. On this server side, enter:
+
 ```bash
 $ nc -u -l <port> # choose a port
 ```
+
 For port, any number should ideally work, but you might want to stick to a 4 digit number just in case. For example, 1234.
 The flag `-u` is telling netcat to use UDP protocols, and the flag `-l` is telling netcat to listen for anything happening on the port we enter. So, all together, `start netcat using UDP, and listen on port <port>.`
 * **Step 5:** On the other terminal, enter:
+
 ```bash
 $ nc -u <ip> <port> # same port
 ```
+
 Now, we’re telling our client to `start netcat using UDP, and send any following messages to <ip> over port <port>.`
 * **Step 6:** On the client side, type whatever you want and hit enter. You should see that mesasge pop up on the server side.
 
