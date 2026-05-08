@@ -458,7 +458,84 @@ sudo sysctl -w net.ipv4.tcp_max_syn_backlog=8192
 
 Using the `ps aux | grep irqbalance` command on the Sunlab machines confirmed that the `irqbalance` daemon is actively running. While this automatic balancing is excellent for general workloads, dynamic load balancing can cause performance degradation in highly specialized environments due to CPU cache invalidation and context switching. For extremely low-latency applications, disabling `irqbalance` will improve performance. Doing so prevents the OS from moving interrupt processing between cores and allows us to manually bind network interrupts to specific, dedicated CPU cores.
 
-## Background and Motivation
+### Operating System TCP Tuning
+While tuning the operating system and socket parameters provides a strong foundation for high-performance networking, it will not provide significant improvemments if the network is fast and the application itself is not optimized for high performance networking. The design of the application dictates how efficiently network packets are handled. To maximize throughput and minimize latency, developers must structure their code to work synchronously with the underlying network stack. We touched upon few of the popular design choices we can make for high performance network applications:
+
+* **Persistent Connections:** Establishing a TCP connection requires a costly three-way handshake, and closing it requires a four-way teardown. Rather than establishing new connections for each data exchange, maintain persistent connections using a Connection Pool. This amortizes the setup cost over thousands or millions of requests. In our RPC workload example, both the client and server implement persistent connections by keeping the socket open in a continuous loop to process all 100,000 transactions, rather than opening a new socket per request.
+
+```cpp
+// From the RPC Client Example: 
+// The socket connects once, and is reused for the entire lifecycle of the workload
+if (connect(sock, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
+    std::cerr << "TCP Connection Failed\n";
+    return;
+}
+
+// Persistent loop utilizing the single open connection
+for (uint32_t i = 0; i < TOTAL_TRANSACTIONS; i += BATCH_SIZE) {
+  // ... send and receive operations ...
+}
+close(sock);
+```
+
+* **Memory Alignment:** Modern CPUs fetch memory according to the size of the cache line, typically 64 bytes in size. We should align the network message data structures to cache lines to reduce memory access overhead. If a network buffer or message struct crosses a cache line boundary, the CPU must perform multiple memory fetches to read a single entry. For high-performance computing tasks where millions of structs are serialized to network buffers, this unaligned access degrades performance. We can easily enforce this in C++ using the `alignas` specifier.
+
+```cpp
+// Optimizing the RPC SmallMessage struct for 64-byte cache line alignment
+struct alignas(64) SmallMessage {
+  uint32_t sequence_id;
+  char payload_data[28];
+  // The struct is exactly 32 bytes, ensuring two messages fit perfectly 
+  // into a single 64-byte L1 cache line without crossing boundaries.
+};
+```
+
+* **Zero-Copy Techniques and Scatter-Gather I/O:** Standard network operations copy data multiple times: from application memory to kernel space, and finally to the network card buffer. We can reduce memory copies to improve performance. One method is using the `readv` or `writev` system calls for scatter/gather I/O. Instead of copying multiple separate variables into one large contiguous application buffer before sending, `writev` allows the application to pass an array of pointers pointing to separate memory locations. The kernel then gathers these disjoint memory segments and sends them directly to the NIC, bypassing the intermediate user-space copy.
+
+* **Optimizing Message Batching:** Sending small, frequent messages overwhelms the CPU with context switches between user and kernel space. Batching aggregates these small payloads into a single system call. However, we should carefully balance latency and throughput. A batch size that is too large forces early messages to wait too long before transmission, destroying real-time latency. A batch size too small fails to saturate the network throughput.
+
+```cpp
+// From the RPC Example: 
+// Application-level batching to balance system call overhead and latency
+const int BATCH_SIZE = 32;
+std::vector<SmallMessage> request_batch(BATCH_SIZE);
+
+// Aggregate messages into a single buffer
+for (int j = 0; j < BATCH_SIZE; ++j) {
+  request_batch[j].sequence_id = i + j;
+  memset(request_batch[j].payload_data, 0x42, sizeof(request_batch[j].payload_data));
+}
+
+// Execute a single send() system call for 32 messages
+send_request(sock, request_batch.data(), BATCH_SIZE * sizeof(SmallMessage));
+```
+
+To evaluate the impact of the application design strategies, we benchmarked the bulk transfer and RPC workloads after implementing persistent connections, memory alignment, and message batching.
+
+#### Bulk Transfer Optimization Results
+
+<a id="bulk_transfer_3"></a>
+<p align="center">
+  <img src="img/tcp_bulk_transfer_server_3.png" width="48%" alt="TCP Server Output">
+  <img src="img/tcp_bulk_transfer_client_3.png" width="48%" alt="TCP Client Output">
+  <br>
+  <em>Figure 9: Bulk Transfer of 1 GB Data Using TCP with Application-Level Optimizations</em>
+</p>
+
+For the bulk transfer, the client was configured to send 1024 MB of target data using an increased application-level chunk size of 1 MB. The transfer completed in 9.20052 seconds on the client side (9.20296 seconds on the server side), achieving a sustained throughput of 933.388 Mbps. When comparing these results to the earlier socket-level optimizations (which achieved ~933 Mbps), the performance remains virtually unchanged. The reason for this is physical network saturation. The underlying Gigabit Ethernet link has already reached the maximum bandwidth. While application-level optimizations—such as passing larger 1 MB chunks—reduce the number of `send()` system calls and save CPU cycles, they cannot force more bits across an already saturated network. In bulk data transfer scenarios, once the network pipe is fully saturated, further application-side CPU optimizations will not yield higher network throughput.
+
+#### RPC Workload Optimization Results
+
+<a id="rpc_3"></a>
+<p align="center">
+  <img src="img/tcp_rpc_client_3.png" width="80%" alt="TCP Client Output">
+  <br>
+  <em>Figure 10: 100K RPC Workload Using TCP with Application-Level Optimizations</em>
+</p>
+
+In stark contrast to the bulk transfer, the RPC workload experienced significant performance improvements. The optimized application processed 100,000 transactions using a batch size of 32. The entire workload completed in just 0.654375 seconds, improving the throughput to 152,818 Transactions Per Second (TPS). The average round-trip latency decreased to 0.00654375 ms. This shows a huge jump from the previous socket-optimized benchmark of ~5847 TPS. The primary reason of this improvement is message batching utilized over a persistent connection. By aggregating 32 smaller messages into a single system call, the application bypassed the overhead associated with continuous context switching between user space and the OS kernel space. Furthermore, enforcing memory alignment on the data structures ensured that the CPU could fetch and process the grouped data efficiently without unnecessary cache line reads. Because RPC workloads are traditionally bound by CPU processing and system call overhead rather than raw network bandwidth, structuring the application architecture to balance latency and throughput directly alleviates these bottlenecks.
+
+## Background and Motivation for RDMA
 
 TODO
 
