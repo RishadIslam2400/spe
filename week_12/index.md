@@ -3,6 +3,71 @@
 ## Lecture 1: Traditional Networking Optimizations
 *CSE 498 — Alex Clevenger, Rishad Islam, Reilly Yankovich*
 
+## Definition: Network protocols
+Network protocols are an established set of rules for computers to communicate and transfer data with each other. Different layers of a network use different protocols to communicate; for example, the protocol for communication between computers over the internet is different than within a server farm. Here, we will focus on two specific protocols: User Datagram Protocol, or UDP, and Transmission Control Protocol, or TCP. We will also briefly discuss some general optimizations when networking.
+
+## General optimizations
+In general, when programming over a network, you want to *properly saturate* the network cards. As in, you want to be sending enough messages that you’re efficiently using the networking capabilities of your network, but not sending too many messages such that you’re exceeding the capabilities. If you send too few messages, not efficiently using the capabilities of your network, that’s called *under-saturating*. If you send too many messages and overwhelm your network, that’s called *over-saturating*. Typically, in any properly large network, the bigger problem is over-saturating, because you can always send more messages if you’re under-saturating, so we will focus on that side of general optimizations.
+
+* **Send fewer messages:** the more messages that have to be exchanged between systems, the more time is spent both sending and processing messages, and the less time is spent actually doing work. By batching numerous smaller messages together into one larger message, you are able to transfer the same amount of data in fewer messages, thereby spending less time networking. All networks have a *Maximum Transmission Unit,* or MTU, which is the maximum number of bytes that can be transmitted with a single message. Over Ethernet, this is typically **1500 bytes**, and over IPV6 it’s typically **1280 bytes.** If you have a message that’s only 20 bytes long, that means you can fit several dozen into a single MTU by batching, without any modifications made to the network!
+* **Think about your topology:** Networks are generally organized into a *topology,* which is how connections are made and organized between systems. One example of this is a *ring topology:* every system has one receiving connection and one sending connection. The final network connects to the first network, causing a “ring” to form: system 1 sends to system 2, which sends to system 3, which sends back to system 1.
+There are several different topologies commonly used, sometimes in conjunction with each other to form a hybrid topology, and they all have their pros and cons; continuing with the ring topology example, there are very few connections that have to be formed, but this results in messages having to go around the ring. If system 2 only sends to system 3, but it needs a message to get to system 1, it has to go *all the way around the ring* to get back to system 1.
+All this to say, if you don’t plan your message passing around your topology, you could be doing a lot more work than necessary. If you have a ring topology, it may be far more efficient to batch several messages going to several different systems to avoid passing through the ring multiple times. In a *mesh topology,* where every system is connected to every other system, it makes more sense to batch several messages going to the same system, because any system is able to transmit to any other system.
+* **Do load balancing:** If one specific system is overloaded in a network, it could slow down every other system in the network. This is because the longer that one system takes to perform tasks, the longer it takes for all other systems to receive confirmation from that system for *their* remote tasks. This is especially true in a ring or tree topology, for example: if one system is overloaded, no messages are getting past that system until it can catch up.
+To avoid this, split up the network traffic between systems. If you have a database, replicating data across different systems means that you can route traffic to different replicas, alleviating pressure. Forming a hybrid topology could reduce network traffic by allowing a second path to reach a specific destination (in a ring topology, for example, just having connections going the other direction can allow routing around a stalled/overloaded system). This can be taken further by applying *network segmentation:* have several sub-networks that are connected with one topology, and then those sub-networks are connected to other sub-networks with a separate, possibly identical, topology.  Rings within rings, rings within mesh, and so on. This allows a network to control traffic further than a simple topology.
+Finally, analyzing your network traffic will show which systems need to be further alleviated, and if they always need to be alleviated. For example, in a multiplayer video game, you may expect less traffic during the average workday and more traffic during the evening. The servers for that game would need more resources dedicated to it during the evening, but during the day they might be used for some other purposes.
+
+## UDP
+User Datagram Protocol, or UDP, is a lightweight network protocol designed to have minimal overhead. There are no headers attached to messages, which are used by TCP to establish the order of packets; if a message in UDP spans multiple packets, those packets can be delivered out of order, delivered partially, or not delivered at all. No connections are formally established when using UDP, meaning that no acknowledgements are sent back to you when sending a UDP packet. When using UDP, you don’t actually know when, or even if, a message gets delivered to the remote machine.
+With these drawbacks, why would you ever want to use UDP? Well, since UDP has minimal overhead, it is ideal for cases where performance is more important than correctness or reliability. UDP is used for things such as video streaming, VPNs, or unreliable broadcasts in distributed systems. In all of these cases, a single dropped or corrupted packet here or there won’t affect the overall system; either that packet can be completely ignored, or it can be retrieved faster if it’s really important to include.
+
+# UDP Example
+Now, we will show a very simple example of using UDP. This example will open a server and client, and allow you to send messages from the client to the server.
+For this example, you will want a terminal with netcat installed. Netcat is installed by default on all linux systems, so WSL and MACs should also have them installed by default.
+If using two separate systems, then you will need to know the IP of at least one of the systems. Otherwise, you can use two terminals on one system, and use a *loopback IP.* A loopback IP is simply an IP that is used for a machine to talk to itself.
+* **Step 1:** if you need the IP of the second machine, open a terminal and use `ifconfig` to find the IP, under “inet.” You can also do this to find a loopback IP if needed. **All IPs between 127.0.0.1 and 128.0.0.0 are enabled loopback IPs by default,** and these should work.
+<a id="ifconfig_example"></a>
+<p align="center">
+  <img src="udp_example_1.png" width="48%" alt="An example of using ifconfig">
+  <br>
+  <em>Using ifconfig to find an IP. "inet" is what you're looking for.</em>
+</p>
+* **Step 2:** enter `nc` to ensure you have netcat installed. If you get a “usage” prompt like what is pictured below, you’re good.
+<a id="nc_example"></a>
+<p align="center">
+  <img src="udp_example_2.png" width="48%" alt="seeing if netcat is installed">
+  <br>
+  <em>Seeing if netcat is installed.</em>
+</p
+* **Step 3:** open a second terminal. If using 2 separate systems, you will want a terminal on each; if using loopback, then 2 terminals on the same machine will work.
+* **Step 4:** pick one of the terminals to be the server. On this server side, enter:
+```bash
+$ nc -u -l <port> # choose a port
+```
+For port, any number should ideally work, but you might want to stick to a 4 digit number just in case. For example, 1234.
+The flag `-u` is telling netcat to use UDP protocols, and the flag `-l` is telling netcat to listen for anything happening on the port we enter. So, all together, `start netcat using UDP, and listen on port <port>.`
+* **Step 5:** On the other terminal, enter:
+```bash
+$ nc -u <ip> <port> # same port
+```
+Now, we’re telling our client to `start netcat using UDP, and send any following messages to <ip> over port <port>.`
+* **Step 6:** On the client side, type whatever you want and hit enter. You should see that mesasge pop up on the server side.
+
+**Congratulations!** You've now used UDP! Try sending extremely long messages, and seeing if everything actually gets sent. Over loopback this is pretty likely, but over an actual network packets stand a greater chance of dropping.
+
+# UDP Optimizations
+So, now that we’ve used UDP and know what to use it for, how can we improve it? The two broad categories of optimizations we can make to UDP are OS tweaks and smarter programming. If you’re using someone else’s network, you may be unable to perform the OS tweaks, but you can always program smarter!
+
+* **OS tweaks:** Here, there are three optimizations we wish to highlight. More exist, but since they are not OS-specific, we only want to mention a few. These tweaks are all fitting into our general goal of properly saturating the network card.
+* * There are two OS buffers that are used by UDP in the linux kernel: Receiving Memory, or RMEM, and Writing Memory, or WMEM. The RMEM buffer stores packets that have been received by the system, but have not yet been used by any application. WMEM is the opposite; it stores packets that have been written by an application, but have not yet been sent over a network. By adjusting these buffer sizes, the OS has more room to store packets before it has to drop packets.
+* * When opening a socket for networking applications, you can set the socket to be *non-blocking.* This allows for packets to be transferred faster. If a system is already experiencing too much traffic, it might be beneficial to not do this, but having non-blocking packets is generally a good thing for UDP.
+* * You can enable *packet aggregation,* which allows the kernel to automatically join several smaller packets into one transmission unit. This is like batching mentioned before, but done automatically by your OS.
+* **Smarter Programming:** Smarter programming, in this case, means to remember the MTU, and to properly saturate the network card.
+* * Since UDP doesn’t guarantee that all packets will be sent in the correct order, we want to minimize the chance that there’s an error. If we send a message smaller than the MTU, then the message will either be fully delivered or not delivered at all; packets won’t be sent in the wrong order, nor will a message be partially sent.
+* * If you are unable to enable packet aggregation in your network, but you’re sending several small messages, you can just batch messages yourself. This has been mentioned before for the purpose of not over-saturating the network card, but in UDP, where messages aren’t guaranteed to all be sent, this is especially important. While this means that losing that single message is more costly, sending a single, batched message lowers the chance of losing anything compared to several unbatched messages.
+* * On the receiving end of UDP messages (such as a server), parallelizing your message handling is a great way to improve your system. Parallelizing allows you to process messages faster, meaning there’s a lower chance of over-saturating the network card.
+
+
 ## Comparison between TCP and UDP
 We can use the `iperf3` tool, which operates similarly to the `perf` utility in Linux, to test and monitor the performance of different network protocols and configurations. This tool enables us to compare crucial performance metrics—such as network bandwidth, latency, and jitter—between TCP and UDP. To execute this comparison, we follow these steps:
 
