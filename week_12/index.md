@@ -26,20 +26,25 @@ Now, we will show a very simple example of using UDP. This example will open a s
 For this example, you will want a terminal with netcat installed. Netcat is installed by default on all linux systems, so WSL and MACs should also have them installed by default.
 If using two separate systems, then you will need to know the IP of at least one of the systems. Otherwise, you can use two terminals on one system, and use a *loopback IP.* A loopback IP is simply an IP that is used for a machine to talk to itself.
 * **Step 1:** if you need the IP of the second machine, open a terminal and use `ifconfig` to find the IP, under “inet.” You can also do this to find a loopback IP if needed. **All IPs between 127.0.0.1 and 128.0.0.0 are enabled loopback IPs by default,** and these should work.
+
 <a id="ifconfig_example"></a>
 <p align="center">
   <img src="udp_example_1.png" width="48%" alt="An example of using ifconfig">
   <br>
   <em>Using ifconfig to find an IP. "inet" is what you're looking for.</em>
 </p>
+
 * **Step 2:** enter `nc` to ensure you have netcat installed. If you get a “usage” prompt like what is pictured below, you’re good.
+
 <a id="nc_example"></a>
 <p align="center">
   <img src="udp_example_2.png" width="48%" alt="seeing if netcat is installed">
   <br>
   <em>Seeing if netcat is installed.</em>
 </p
+
 * **Step 3:** open a second terminal. If using 2 separate systems, you will want a terminal on each; if using loopback, then 2 terminals on the same machine will work.
+
 * **Step 4:** pick one of the terminals to be the server. On this server side, enter:
 
 ```bash
@@ -48,6 +53,7 @@ $ nc -u -l <port> # choose a port
 
 For port, any number should ideally work, but you might want to stick to a 4 digit number just in case. For example, 1234.
 The flag `-u` is telling netcat to use UDP protocols, and the flag `-l` is telling netcat to listen for anything happening on the port we enter. So, all together, `start netcat using UDP, and listen on port <port>.`
+
 * **Step 5:** On the other terminal, enter:
 
 ```bash
@@ -55,6 +61,7 @@ $ nc -u <ip> <port> # same port
 ```
 
 Now, we’re telling our client to `start netcat using UDP, and send any following messages to <ip> over port <port>.`
+
 * **Step 6:** On the client side, type whatever you want and hit enter. You should see that mesasge pop up on the server side.
 
 **Congratulations!** You've now used UDP! Try sending extremely long messages, and seeing if everything actually gets sent. Over loopback this is pretty likely, but over an actual network packets stand a greater chance of dropping.
