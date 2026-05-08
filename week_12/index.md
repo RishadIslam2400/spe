@@ -29,7 +29,7 @@ If using two separate systems, then you will need to know the IP of at least one
 
 <a id="ifconfig_example"></a>
 <p align="center">
-  <img src="udp_example_1.png" width="48%" alt="An example of using ifconfig">
+  <img src="img/udp_example_1.png" width="48%" alt="An example of using ifconfig">
   <br>
   <em>Using ifconfig to find an IP. "inet" is what you're looking for.</em>
 </p>
@@ -38,7 +38,7 @@ If using two separate systems, then you will need to know the IP of at least one
 
 <a id="nc_example"></a>
 <p align="center">
-  <img src="udp_example_2.png" width="48%" alt="seeing if netcat is installed">
+  <img src="img/udp_example_2.png" width="48%" alt="seeing if netcat is installed">
   <br>
   <em>Seeing if netcat is installed.</em>
 </p
@@ -100,8 +100,8 @@ The TCP benchmark is designed to determine the maximum available throughput (goo
 
 <a id="tcp_benchmark"></a>
 <p align="center">
-  <img src="tcp_benchmark_1.png" width="48%" alt="TCP Server Output">
-  <img src="tcp_benchmark_2.png" width="48%" alt="TCP Client Output">
+  <img src="img/tcp_benchmark_1.png" width="48%" alt="TCP Server Output">
+  <img src="img/tcp_benchmark_2.png" width="48%" alt="TCP Client Output">
   <br>
   <em>Figure 1: TCP benchmark with iperf3</em>
 </p>
@@ -110,8 +110,8 @@ Reviewing the TCP benchmark results ([Figure 1](#tcp_benchmark)) shows several e
 
 <a id="udp_benchmark"></a>
 <p align="center">
-  <img src="udp_benchmark_1.png" width="48%" alt="TCP Server Output">
-  <img src="udp_benchmark_2.png" width="48%" alt="TCP Client Output">
+  <img src="img/udp_benchmark_1.png" width="48%" alt="UDP Server Output">
+  <img src="img/udp_benchmark_2.png" width="48%" alt="UDP Client Output">
   <br>
   <em>Figure 2: UDP benchmark with iperf3</em>
 </p>
@@ -177,8 +177,8 @@ while (true) {
 ```
 <a id="bulk_transfer_1"></a>
 <p align="center">
-  <img src="tcp_bulk_transfer_server_1.png" width="48%" alt="TCP Server Output">
-  <img src="tcp_bulk_transfer_client_1.png" width="48%" alt="TCP Client Output">
+  <img src="img/tcp_bulk_transfer_server_1.png" width="48%" alt="TCP Server Output">
+  <img src="img/tcp_bulk_transfer_client_1.png" width="48%" alt="TCP Client Output">
   <br>
   <em>Figure 3: Bulk Transfer of 1 GB Data Using TCP</em>
 </p>
@@ -226,7 +226,7 @@ while (true) {
 ```
 <a id="rpc_1"></a>
 <p align="center">
-  <img src="tcp_rpc_client_1.png" width="80%" alt="TCP Client Output">
+  <img src="img/tcp_rpc_client_1.png" width="80%" alt="TCP Client Output">
   <br>
   <em>Figure 4: 100K RPC Workload Using TCP</em>
 </p>
@@ -271,15 +271,15 @@ We applied this optimizations to our TCP bulk transfer and RPC benchmarks.
 
 <a id="bulk_transfer_2"></a>
 <p align="center">
-  <img src="tcp_bulk_transfer_server_2.png" width="48%" alt="TCP Server Output">
-  <img src="tcp_bulk_transfer_client_2.png" width="48%" alt="TCP Client Output">
+  <img src="img/tcp_bulk_transfer_server_2.png" width="48%" alt="TCP Server Output">
+  <img src="img/tcp_bulk_transfer_client_2.png" width="48%" alt="TCP Client Output">
   <br>
   <em>Figure 5: Bulk Transfer of 1 GB Data Using TCP with Socket Optmizations</em>
 </p>
 
 <a id="rpc_2"></a>
 <p align="center">
-  <img src="tcp_rpc_client_2.png" width="80%" alt="TCP Client Output">
+  <img src="img/tcp_rpc_client_2.png" width="80%" alt="TCP Client Output">
   <br>
   <em>Figure 6: 100K RPC Workload Using TCP with Socket Optmizations</em>
 </p>
@@ -337,6 +337,126 @@ setsockopt(server_fd, SOL_TCP, TCP_FASTOPEN, &qlen, sizeof(qlen));
 ```
 
 ### Network Interface Configuration
+We can optimize the network performance by adjusting configurations at the hardware and operating system level. Below are several methods to tune the Network Interface Card (NIC) for better latency and throughput.
+
+* **Jumbo Frames (MTU):** Increasing the Maximum Transmission Unit (MTU) size allows us to reduce the protocol overhead for large data transfers. By sending larger payloads per packet, the CPU spends less time processing headers. However, to use Jumbo Frames successfully, all devices on the network segment—including switches and routers—must be configured to support the same MTU size.
+
+```bash
+# Check current MTU for all interfaces or a specific one
+ip link show | grep mtu
+ip link show eth0 | grep mtu
+
+# Temporarily set MTU to 9000 for jumbo frames
+sudo ip link set dev eth0 mtu 9000
+```
+
+To make these changes permanent in Ubuntu/Debian edit `/etc/network/interfaces` and add `mtu 9000` to the interface configuration.
+
+* **Interrupt Coalescing:** Interrupt coalescing controls how frequently the NIC generates hardware interrupts to the CPU when packets arrive. By default, NICs group packets together to minimize CPU interruptions. Reducing or completely disabling coalescing improves network latency, but it does so at the cost of increased CPU usage due to the higher volume of interrupts.
+
+```bash
+# View current coalescing settings
+ethtool -c eth0
+
+# Disable coalescing for the lowest possible latency
+sudo ethtool -C eth0 rx-usecs 0 tx-usecs 0
+
+# Or set a low value to balance latency and CPU load
+sudo ethtool -C eth0 rx-usecs 16 tx-usecs 16
+```
+
+To make this permanent, these commands can be added to `/etc/network/interfaces`.
+
+* **Receive Side Scaling (RSS):** RSS helps prevent CPU bottlenecks by distributing the network packet processing load safely across multiple CPU cores.
+
+```bash
+# View available hardware channels
+ethtool -l eth0
+
+# View current RSS configuration
+ethtool -x eth0
+
+# Enable the maximum number of channels across your cores
+sudo ethtool -L eth0 combined <max_value>
+```
+
+* **Interrupt Affinity:** Interrupt affinity binds network card interrupts to specific CPU cores. Pinning these hardware interrupts to dedicated cores ensures better CPU cache utilization and eliminates the performance penalties associated with context switching between different cores.
+
+```bash
+# Find your NIC's IRQ number from the proc filesystem
+cat /proc/interrupts | grep eth
+
+# Assuming you identify and set your IRQ number
+IRQ=<your_irq_number>
+
+# Bind the interrupt to core 1 (the second core)
+echo 2 > /proc/irq/$IRQ/smp_affinity
+
+# Alternatively, use smp_affinity_list for more precise control via a bitmask
+echo "1" > /proc/irq/$IRQ/smp_affinity_list
+```
+
+### Operating System TCP Tuning
+While socket-level optimizations are handled within the application code, the kernel dictates the overall rules for network traffic. By tuning these kernel parameters, we can enhance TCP performance. It is important to note that modifying these system-wide settings requires root (sudo) access. In our experiments on the CSE Sunlab machines, we were able to observe the default configurations using the `sysctl` and `ps` commands, but we could not apply permanent optimizations due to permission restrictions.
+
+* **TCP Window Scaling and Buffer Sizes:** To improve throughput, especially on networks with a high bandwidth-delay product (BDP), it is crucial to increase the maximum buffer sizes. The Linux kernel uses parameters like `net.core.rmem_max` and `net.core.wmem_max` to define the absolute maximum receive and send buffer sizes allowed for all connections. TCP-specific settings, such as `net.ipv4.tcp_rmem` and `net.ipv4.tcp_wmem`, define the minimum, default, and maximum memory allocated per socket. Additionally, ensuring window scaling is enabled (`net.ipv4.tcp_window_scaling`) allows TCP to exceed the traditional 64 KB window size limit.
+
+<a id="sunlab_buf_size"></a>
+<p align="center">
+  <img src="img/buffer_size_sunlab.png" width="80%" alt="Sunlab Network Buffer Sizes">
+  <br>
+  <em>Figure 7: Sunlab Network Buffer Sizes</em>
+</p>
+
+On the Sunlab machines, querying these values shows default limits (e.g., rmem_max and wmem_max both set to 212,992 bytes, with window scaling enabled). To optimize a system for high-throughput transfers, we need to execute commands like the following:
+
+```bash
+# Temporarily apply larger max buffer sizes (e.g., 16 MB)
+sudo sysctl -w net.core.rmem_max=16777216
+sudo sysctl -w net.core.wmem_max=16777216
+
+# Tune TCP-specific memory limits (min, default, max in bytes)
+sudo sysctl -w net.ipv4.tcp_rmem="4096 87380 16777216"
+sudo sysctl -w net.ipv4.tcp_wmem="4096 65536 16777216"
+
+# Ensure window scaling is enabled
+sudo sysctl -w net.ipv4.tcp_window_scaling=1
+```
+
+<a id="sunlab_fin_timeout"></a>
+<p align="center">
+  <img src="img/fin_timeout_sunlab.png" width="80%" alt="Sunlab Fin Timeout">
+  <br>
+  <em>Figure 8: Sunlab TCP FIN Timeout</em>
+</p>
+
+* **TCP Connection Setup Options:** We can also tune parameters that affect connection establishment and teardown to optimize how the OS handles high volumes of incoming or short-lived connections.
+  * *TCP FIN Timeout:* This controls how long a socket remains in the `FIN-WAIT-2` state before being forcibly closed by the system. The Sunlab default is 60 seconds. Reducing this frees up memory resources faster on busy servers.  
+  * *TCP Time-Wait Reuse:* Controlled via `net.ipv4.tcp_tw_reuse`, this allows the kernel to safely reuse sockets in the `TIME-WAIT` state for new outbound connections, which is important for clients handling thousands of rapid RPC requests. The Sunlab default was configured to a value of 2.
+  * *SYN Backlog:* Controlled by `net.ipv4.tcp_max_syn_backlog`, this determines how many half-open connections (where the initial SYN is received but the handshake is incomplete) the kernel can hold in its queue. The Sunlab machines allocate 2048 slots. Increasing this helps prevent connection drops during traffic spikes or SYN flood attacks.
+To optimize connection setup and teardown, we can use the following commands:
+
+```bash
+# Reduce FIN timeout to 15 seconds to free resources quickly
+sudo sysctl -w net.ipv4.tcp_fin_timeout=15
+
+# Enable safe reuse of TIME-WAIT sockets (1 = enabled)
+sudo sysctl -w net.ipv4.tcp_tw_reuse=1
+
+# Increase the maximum SYN backlog for heavy server loads
+sudo sysctl -w net.ipv4.tcp_max_syn_backlog=8192
+```
+
+* **IRQ Balance and NUMA Settings:** On multi-CPU systems, the kernel attempts to optimize interrupt handling and memory access patterns. A background daemon called `irqbalance` is typically used to automatically distribute hardware interrupts (such as incoming network packets) across multiple CPU cores.
+
+<a id="sunlab_irqbalance"></a>
+<p align="center">
+  <img src="img/irqbalance_sunlab.png" width="80%" alt="Sunlab IRQ Balance">
+  <br>
+  <em>Figure 8: Sunlab irqbalance Daemon</em>
+</p>
+
+Using the `ps aux | grep irqbalance` command on the Sunlab machines confirmed that the `irqbalance` daemon is actively running. While this automatic balancing is excellent for general workloads, dynamic load balancing can cause performance degradation in highly specialized environments due to CPU cache invalidation and context switching. For extremely low-latency applications, disabling `irqbalance` will improve performance. Doing so prevents the OS from moving interrupt processing between cores and allows us to manually bind network interrupts to specific, dedicated CPU cores.
 
 ## Background and Motivation
 
