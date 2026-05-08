@@ -555,7 +555,9 @@ Since ordering is enforced per-QP, the mapping between threads and QPs is an imp
 - **Round-robin:** threads distribute work across QPs
 - **Random:** threads pick QPs randomly
 - **QP-sharing:** multiple threads share a QP — requires explicit coordination and is likely to introduce synchronization overhead
-
+ - After further clarification, kindly note that `ibv_post_send` and `ibv_poll_cq` are **thread-safe**
+  - Thus, multiple threads can push elements to the SQ or CQ without needing additional synchronization 
+    - Other considerations: cache bouncing, contention on the QP-spinlock 
 ---
 
 ## System Design & Tunable Parameters
