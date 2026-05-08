@@ -827,5 +827,6 @@ Fibers are being explored in ongoing work to further reduce per-operation overhe
 
 ## Citations
 
+- [Optimizing TCP for High-Performance Applications: An HFT Developer's Guide](https://dev.to/sid_hattangadi/optimizing-tcp-for-high-performance-applications-an-hft-developers-guide-1212)
 - Slides 3–6, 19–20 by Amanda Baran, SPAA '25
 - Slide 29: [Demystifying RDMA — LinkedIn post by Ravichandran Paramasivam](https://www.linkedin.com/posts/ravichandran-paramasivam-a12b3438_demystifying-rdma-from-sockets-to-zero-copy-share-7394351876416143360-UnQK/)
